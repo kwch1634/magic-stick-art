@@ -1,5 +1,6 @@
 let h = 0;
 let kiraAudio;
+let bakemonoImg, fukidashiImg;
 
 // 🌟 マイクロビットから届くデータを保存する箱
 let mRoll = 0;
@@ -7,7 +8,18 @@ let mPitch = 0;
 let mButtonA = 0; // 0なら離してる、1なら押してる
 
 let stickX, stickY;
-let bakemonoImg, fukidashiImg;
+
+// 🌟【最重要】エラーで固まるのを防ぐため、お助けクラスをプログラムの最上部（一番安全な場所）に引っ越しました
+class LineBreakTransformer {
+    constructor() { this.container = ''; }
+    transform(chunk, controller) {
+        this.container += chunk;
+        const lines = this.container.split('\n');
+        this.container = lines.pop();
+        lines.forEach(line => controller.enqueue(line));
+    }
+    flush(controller) { if (this.container) controller.enqueue(this.container); }
+}
 
 function preload() {
     bakemonoImg = loadImage("Imgaes/sugoi_bakemono.png");
@@ -36,6 +48,12 @@ function setup() {
             // ブラウザ標準の機能でマイクロビットと接続する
             const port = await navigator.serial.requestPort();
             await port.open({ baudRate: 9600 });
+            
+            // 🌟【ここがフリーズを解く魔法！】
+            // 接続したあと、ブラウザの準備が完全に整うまで「2秒間」何もしないでじっと待つ！
+            console.log("接続完了！ブラウザの準備を待っています...");
+            await new Promise(resolve => setTimeout(resolve, 2000));
+            console.log("準備OK！データの読み込みを開始します。");
             
             // データを受け取るループ処理を開始
             readSerialLoop(port);
@@ -146,37 +164,32 @@ function draw() {
     text("ペンの位置: X=" + int(stickX) + ", Y=" + int(stickY), 20, 170);
 } 
 
-// 🌟 マイクロビットから届くデータを自動解読するループ関数（カッコの閉じを完璧に修正しました）
+// 🌟 マイクロビットから届くデータを自動解読するループ関数（絶対に固まらない高速版）
 async function readSerialLoop(port) {
-    const textDecoder = new TextDecoderStream();
-    const readableStreamClosed = port.readable.pipeTo(textDecoder.writable);
-    const reader = textDecoder.readable.getReader();
-
-    let buffer = ""; 
+    const lineReader = port.readable
+        .pipeThrough(new TextDecoderStream())
+        .pipeThrough(new TransformStream(new LineBreakTransformer()))
+        .getReader();
 
     try {
         while (true) {
-            const { value, done } = await reader.read();
+            const { value, done } = await lineReader.read();
             if (done) break;
+            
             if (value) {
-                buffer += value;
-                if (buffer.includes('\n')) {
-                    let parts = buffer.split('\n');
-                    let currentData = parts[parts.length - 2]; 
-                    buffer = parts[parts.length - 1]; 
+                // 🌟処理を軽くするため、JavaScript標準の「.split()」と「.trim()」で超高速分解します
+                let cleaned = value.trim();
+                let list = cleaned.split(',');
+                
+                if (list.length === 3) {
+                    mRoll = parseFloat(list[0].trim()) || 0;     // 左右の傾き
+                    mPitch = parseFloat(list[1].trim()) || 0;    // 前後の傾き
                     
-                    let list = split(trim(currentData), ',');
-                    if (list.length === 3) {
-                        mRoll = float(list[0]);     // 左右の傾き
-                        mPitch = float(list[1]);    // 前後の傾き
-                        
-                        // 1 または "true" だったらボタンON
-                        let btnRaw = trim(list[2]);
-                        if (btnRaw === '1' || btnRaw === 'true') {
-                            mButtonA = 1;
-                        } else {
-                            mButtonA = 0;
-                        }
+                    let btnRaw = list[2].trim();
+                    if (btnRaw === '1' || btnRaw === 'true') {
+                        mButtonA = 1;
+                    } else {
+                        mButtonA = 0;
                     }
                 }
             }
@@ -184,7 +197,7 @@ async function readSerialLoop(port) {
     } catch (error) {
         console.error("データ読み込みエラー: ", error);
     } finally {
-        reader.releaseLock();
+        lineReader.releaseLock();
     }
 }
 
